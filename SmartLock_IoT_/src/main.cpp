@@ -23,6 +23,8 @@ bool isOpen = false;
 
 bool isOpenByPassword = false;
 
+bool isSendetOnLockTopic = false;
+
 bool passwordChanged = false;
 
 //----
@@ -46,7 +48,7 @@ char* hostname = "https://ru.flespi.io/mqtt/";
 
 char* openMessage = "1";
 
-char* paswword = "1111";
+char* paswword = "2222";
 
 int passwordCount = 0;
 
@@ -91,7 +93,7 @@ bool isEquals(char* first, char* second){
 
 bool isEqualsPassword(char* handledPassword){
     if(strlen(handledPassword) < 4){
-        false;
+        return false;
     }
     if(strlen(paswword) == 0){
         return false;
@@ -104,6 +106,29 @@ bool isEqualsPassword(char* handledPassword){
     return true;
 }
 
+bool isEqualsPassword(std::string str){
+    if(str.size() < 4 || strlen(paswword) < 4){
+        return false;
+    }
+    for(int i = 0; i < 4; i++){
+        if(str.at(i) != paswword[i]){
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isPassword(char* handlerPassword){
+    if(strlen(handlerPassword) < 4 || strlen(handlerPassword) == 0){
+        return false;
+    }
+    for(int i = 0; i < 4; i++){
+        if(handlerPassword[i] < '0' || handlerPassword[i] > '9'){
+            return false;
+        }
+    }
+    return true;
+}
 
 const char *sec2str(nsapi_security_t sec)
 {
@@ -194,7 +219,6 @@ void init(){
     printf("RSSI: %d\n\n", wifi->get_rssi());
 }
 
-
 void _releFunc(){
     while (true){
         if(isOpen){
@@ -251,11 +275,19 @@ int whatButton(){
 void _checkPasswrod(){
     char* pass = new char[4];
     std::string passw;
-    int count = 0;
     while (true){
         passw = "";
+        if(isOpen && isOpenByPassword){
+            whatButton();
+            isOpen = false;
+            isOpenByPassword = false;
+            continue;
+        }
+        if(isOpen){
+            continue;
+        }
         for(int  i = 0; i < 4; i++){
-            if(!isOpen && !passwordChanged){
+            if(!isOpen){
                 switch (whatButton()){
                 case 1:
                     passw += "1";
@@ -286,12 +318,20 @@ void _checkPasswrod(){
         if(strlen(paswword) < 4){
             continue;
         }
-        for(int i = 0; i < 4; i++){
-            if (paswword[i] != passw.at(i)){
-                passwordChanged = false;
-                break;
+        if(isEqualsPassword(passw)){
+            isOpen = true;
+            isOpenByPassword = true;
+            isSendetOnLockTopic = false;
+        }else{
+            printf("password isn't right\r\n");
+            if(passwordChanged){
+                printf("becouse password is changed\n try again\r\n");
             }
+            printf("try again\r\n");
         }
+        // else{
+        //     passwordChanged = false;
+        // }
     }
 }
 
@@ -321,16 +361,36 @@ void handlerOpen(MQTT::MessageData& md)
 void handlerPassword(MQTT::MessageData& md){
     messagePassword = md.message;
     char* data = (char*)messagePassword.payload;
-    if (!isEquals(paswword, data)){
-        printf("pasword change\n\r");
+    printf("starrt handler\r\n");
+    printf("data => %s\r\n", data);
+    // for(int i = 0; i < strlen(data); i++){
+    //     printf("data %d %d\r\n", i, (int)data[i]);
+    // }
+    if (!isEqualsPassword(data) && isPassword(data)){
+        printf("pasword change\r\n");
         passwordChanged = true;
-        paswword = data;
+        std::string str = {data[0], data[1], data[2], data[3]};
+        // paswword = str.data();
+        paswword = new char[str.size() + 1];
+        strcpy(paswword, str.c_str());
+        printf("new password ==>> %s\r\n", paswword);
     }
     ++passwordCount;
 }
 
-void sendLockTopic(NetworkInterface *net){
-    MQTTNetwork network(net);
+void handlerFillPassword(MQTT::MessageData& md){
+    printf("fill password\r\n");
+    char* passwordFill = (char*)md.message.payload;
+    printf("topic password ===>> %s\r\n", passwordFill);
+    if(!isPassword(passwordFill)){
+        paswword = "2222";
+        printf("password is deafuld = %s\r\n", paswword);
+    }
+    return;
+}
+
+void sendLockTopic(){
+    MQTTNetwork network(wifi);
     MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
 
     int rc = network.connect(ipBrocker, port);
@@ -338,7 +398,7 @@ void sendLockTopic(NetworkInterface *net){
     MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
 
     data.MQTTVersion = 3;
-    data.clientID.cstring = "tester";
+    data.clientID.cstring = "nonadmin";
     data.username.cstring = "aOKHDLpdeDKOtCFR37k9GtgJGmyci5mhIVO9u1dzvLbOeGw7DE48Y8Hsk3urWFys";
     data.password.cstring = "123";
     data.cleansession = true;
@@ -351,11 +411,19 @@ void sendLockTopic(NetworkInterface *net){
     printf("rs client = %d\r\n", rc);
 
     while(true){
-        if(isOpen && isOpenByPassword){
+        printf("isOpen => %d\r\n", isOpen);
+        printf("isOpenByPassword => %d\r\n", isOpenByPassword);
+        printf("isSendetOnLockTopic => %d\r\n", isSendetOnLockTopic);
+        thread_sleep_for(3000);
+        if(isOpen && isOpenByPassword && !isSendetOnLockTopic){
+            printf("start sending\r\n");
             rc = client.publish(lockTopic, message);
+            printf("publish by open state of lock => %d\r\n", rc);
             if(rc == 0){
                 printf("message by open password\r\n");
+                isSendetOnLockTopic = true;
             }
+            client.yield(10);
         }    
     }
 }
@@ -412,12 +480,15 @@ void checkOpen(NetworkInterface *net){
     MQTTNetwork network(net);
     MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
 
+
+    // printf("========start  Check Open ======\r\n");
+
     int rc = network.connect(ipBrocker, port);
     printf("rs network = %d\r\n", rc);
     MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
 
     data.MQTTVersion = 3;
-    data.clientID.cstring = "tester";
+    data.clientID.cstring = "testerOpen";
     data.username.cstring = "aOKHDLpdeDKOtCFR37k9GtgJGmyci5mhIVO9u1dzvLbOeGw7DE48Y8Hsk3urWFys";
     data.password.cstring = "123";
     data.cleansession = true;
@@ -453,10 +524,84 @@ void checkOpen(NetworkInterface *net){
     printf("rs publish = %d\r\n", rc);
 //
     while (true)
-        client.yield(100);
+        client.yield(10);
 }
 
-void checkPassword(NetworkInterface *net){
+void checkPassword(){
+    MQTTNetwork network(wifi);
+    MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
+
+    int rc = network.connect(ipBrocker, port);
+    printf("rs network = %d\r\n", rc);
+    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+
+    data.MQTTVersion = 3;
+    data.clientID.cstring = "notadmin";
+    data.username.cstring = "aOKHDLpdeDKOtCFR37k9GtgJGmyci5mhIVO9u1dzvLbOeGw7DE48Y8Hsk3urWFys";
+    data.password.cstring = "123";
+    data.cleansession = true;
+    rc = client.connect(data);
+    if(rc == 0){
+        printf("check password CONECT to user\r\n");
+    }else{
+        printf("check password conect to user error\r\n");
+    }
+    printf("rs check password client = %d\r\n", rc);
+
+    rc = client.subscribe(passwordTopic, MQTT::QOS1, handlerPassword);
+    if(rc == 0){
+        printf("check password supscribe sucsess\r\n");
+    } else {
+        printf("check password supscribe error\r\n");
+    }
+    printf("rs check password client subscribe = %d\r\n", rc);
+    while (true){
+        client.yield(10);
+    }
+    
+}
+
+
+// void checkPassword(NetworkInterface *net){
+//     MQTTNetwork network(net);
+//     MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
+
+
+//     printf("========start Check password ======\r\n");
+
+//     int rc = network.connect(ipBrocker, port);
+//     printf("rs network = %d\r\n", rc);
+//     MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+
+//     data.MQTTVersion = 3;
+//     data.clientID.cstring = "tester";
+//     data.username.cstring = "aOKHDLpdeDKOtCFR37k9GtgJGmyci5mhIVO9u1dzvLbOeGw7DE48Y8Hsk3urWFys";
+//     data.password.cstring = "123";
+//     data.cleansession = true;
+//     rc = client.connect(data);
+//     if(rc == 0){
+//         printf("CONECT to user\r\n");
+//     }else{
+//         printf("conect to user error\r\n");
+//     }
+//     printf("rs client = %d\r\n", rc);
+
+//     rc = client.subscribe(passwordTopic, MQTT::QOS1, handlerPassword);
+//     if(rc == 0){
+//         printf("supscribe sucsess\r\n");
+//     } else {
+//         printf("supscribe error\r\n");
+//     }
+//     printf("rs client subscribe = %d\r\n", rc);
+//     while (true){
+//         client.yield(100);
+//     }
+    
+// }
+
+
+void fillPassword(NetworkInterface *net){
+    // printf("========start Fill password ======\r\n");
     MQTTNetwork network(net);
     MQTT::Client<MQTTNetwork, Countdown> client = MQTT::Client<MQTTNetwork, Countdown>(network);
 
@@ -469,51 +614,50 @@ void checkPassword(NetworkInterface *net){
     data.username.cstring = "aOKHDLpdeDKOtCFR37k9GtgJGmyci5mhIVO9u1dzvLbOeGw7DE48Y8Hsk3urWFys";
     data.password.cstring = "123";
     data.cleansession = true;
+
     rc = client.connect(data);
     if(rc == 0){
-        printf("CONECT to user\r\n");
+        printf("fill password CONECT to user\r\n");
     }else{
-        printf("conect to user error\r\n");
+        printf("fill password conect to user error\r\n");
     }
     printf("rs client = %d\r\n", rc);
 
-    rc = client.subscribe(passwordTopic, MQTT::QOS1, handlerPassword);
+    rc = client.subscribe(passwordTopic, MQTT::QOS1, handlerFillPassword);
     if(rc == 0){
-        printf("supscribe sucsess\r\n");
+        printf("fill password supscribe sucsess\r\n");
     } else {
-        printf("supscribe error\r\n");
+        printf("fill password supscribe error\r\n");
     }
     printf("rs client subscribe = %d\r\n", rc);
-    while (true){
-        client.yield(100);
-    }
-    
+    client.yield(10);
 }
 
 
-
-
-
 int main(){
-
     printf("WiFi example\n");
     init();
+    // fillPassword(wifi);
     Rele.write(1);
     thread_sleep_for(1000);
     Rele.write(0);
 
-    char* first = "wer";
-    char* second = "wer";
+    // char* first = "wer";
+    // char* second = "wer";
     Thread openLock;
     openLock.start(_releFunc);
 
-    printf("========%d\r\n", isEquals(first, second));
+    // printf("========%d\r\n", isEquals(first, second));
 
-    Thread passwordOpen;
+    Thread passwordButton, passwordTopic, sendTopic;
 
-    passwordOpen.start(_checkPasswrod);
+    passwordButton.start(_checkPasswrod);
 
+    passwordTopic.start(checkPassword);
 
+    sendTopic.start(sendLockTopic);
+
+    // checkPassword(wifi);
 
     checkOpen(wifi);
 
